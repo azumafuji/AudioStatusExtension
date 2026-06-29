@@ -85,13 +85,16 @@ internal static class AudioStatusItems
 
 internal sealed partial class AudioStatusDockBand : WrappedDockItem
 {
+    private readonly Action _onChanged;
+
     public AudioStatusDockBand(Action onChanged)
         : base(AudioStatusItems.Create(onChanged), "audio-status.default-devices", "Audio Status")
     {
+        _onChanged = onChanged;
     }
 
     public void Refresh()
     {
-        AudioStatusItems.UpdateCurrentDeviceTitles(Items);
+        Items = AudioStatusItems.Create(_onChanged);
     }
 }
