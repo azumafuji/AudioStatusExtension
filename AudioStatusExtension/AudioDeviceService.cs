@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using Microsoft.Win32;
 using Windows.Foundation;
 using Windows.Media.Devices;
@@ -10,6 +11,12 @@ namespace AudioStatusExtension;
 internal static partial class AudioDeviceService
 {
     private const int DeviceStateActive = 0x00000001;
+    private const uint ClsctxInprocServer = 0x1;
+    private static readonly Guid MMDeviceEnumeratorClassId = new("BCDE0395-E52F-467C-8E3D-C4579291692E");
+    private static readonly Guid MMDeviceEnumeratorInterfaceId = new("A95664D2-9614-4F35-A746-DE8DB63617E6");
+    private static readonly Guid PolicyConfigClassId = new("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9");
+    private static readonly Guid PolicyConfigInterfaceId = new("F8679F50-850A-41CF-9C72-430F290290C8");
+    private static readonly StrategyBasedComWrappers ComWrappers = new();
     private static readonly string[] RegistryDeviceNameProperties =
     [
         "{026e516e-b814-414b-83cd-856d6fef4822},2",
@@ -18,11 +25,12 @@ internal static partial class AudioDeviceService
         "{a45c254e-df1c-4efd-8020-67d146a850e0},2",
     ];
 
-    public static IDisposable WatchDefaultDeviceChanges(Action onChanged)
+    public static bool TryWatchDefaultDeviceChanges(Action onChanged, out IDisposable watcher)
     {
         if (!OperatingSystem.IsWindows())
         {
-            return NullDisposable.Instance;
+            watcher = NullDisposable.Instance;
+            return false;
         }
 
         var watchers = new List<IDisposable>(2);
@@ -43,18 +51,24 @@ internal static partial class AudioDeviceService
         {
         }
 
-        return watchers.Count switch
+        watcher = watchers.Count switch
         {
             0 => NullDisposable.Instance,
             1 => watchers[0],
             _ => new CompositeDisposable(watchers),
         };
+
+        return watchers.Count > 0;
     }
 
     public static AudioStatusSnapshot GetSnapshot()
     {
+        var outputDeviceId = GetDefaultDeviceId(EDataFlow.Render);
+        var inputDeviceId = GetDefaultDeviceId(EDataFlow.Capture);
         return new AudioStatusSnapshot(
+            outputDeviceId,
             GetDefaultDeviceName(AudioDeviceKind.Output),
+            inputDeviceId,
             GetDefaultDeviceName(AudioDeviceKind.Input),
             DateTimeOffset.Now);
     }
@@ -70,7 +84,7 @@ internal static partial class AudioDeviceService
         {
             var dataFlow = ToDataFlow(kind);
             var defaultDeviceId = GetDefaultDeviceId(dataFlow);
-            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            var enumerator = CreateDeviceEnumerator();
 
             try
             {
@@ -95,7 +109,7 @@ internal static partial class AudioDeviceService
                         }
                         finally
                         {
-                            Marshal.ReleaseComObject(device);
+                            ReleaseComObject(device);
                         }
                     }
 
@@ -104,12 +118,12 @@ internal static partial class AudioDeviceService
                 }
                 finally
                 {
-                    Marshal.ReleaseComObject(devices);
+                    ReleaseComObject(devices);
                 }
             }
             finally
             {
-                Marshal.ReleaseComObject(enumerator);
+                ReleaseComObject(enumerator);
             }
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
@@ -125,7 +139,7 @@ internal static partial class AudioDeviceService
             return;
         }
 
-        var policyConfig = (IPolicyConfig)new PolicyConfigClient();
+        var policyConfig = ActivateComObject<IPolicyConfig>(PolicyConfigClassId, PolicyConfigInterfaceId);
 
         try
         {
@@ -135,7 +149,7 @@ internal static partial class AudioDeviceService
         }
         finally
         {
-            Marshal.ReleaseComObject(policyConfig);
+            ReleaseComObject(policyConfig);
         }
     }
 
@@ -150,7 +164,7 @@ internal static partial class AudioDeviceService
 
         try
         {
-            var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            var enumerator = CreateDeviceEnumerator();
 
             try
             {
@@ -166,17 +180,17 @@ internal static partial class AudioDeviceService
                     }
                     finally
                     {
-                        Marshal.ReleaseComObject(store);
+                        ReleaseComObject(store);
                     }
                 }
                 finally
                 {
-                    Marshal.ReleaseComObject(device);
+                    ReleaseComObject(device);
                 }
             }
             finally
             {
-                Marshal.ReleaseComObject(enumerator);
+                ReleaseComObject(enumerator);
             }
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
@@ -209,7 +223,7 @@ internal static partial class AudioDeviceService
 
         try
         {
-            enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            enumerator = CreateDeviceEnumerator();
             Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var device));
 
             try
@@ -219,7 +233,7 @@ internal static partial class AudioDeviceService
             }
             finally
             {
-                Marshal.ReleaseComObject(device);
+                ReleaseComObject(device);
             }
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
@@ -230,7 +244,7 @@ internal static partial class AudioDeviceService
         {
             if (enumerator is not null)
             {
-                Marshal.ReleaseComObject(enumerator);
+                ReleaseComObject(enumerator);
             }
         }
     }
@@ -302,7 +316,7 @@ internal static partial class AudioDeviceService
 
         try
         {
-            enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+            enumerator = CreateDeviceEnumerator();
             Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var device));
 
             try
@@ -312,7 +326,7 @@ internal static partial class AudioDeviceService
             }
             finally
             {
-                Marshal.ReleaseComObject(device);
+                ReleaseComObject(device);
             }
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
@@ -323,7 +337,7 @@ internal static partial class AudioDeviceService
         {
             if (enumerator is not null)
             {
-                Marshal.ReleaseComObject(enumerator);
+                ReleaseComObject(enumerator);
             }
         }
     }
@@ -354,7 +368,7 @@ internal static partial class AudioDeviceService
         }
         finally
         {
-            Marshal.ReleaseComObject(store);
+            ReleaseComObject(store);
         }
     }
 
@@ -425,10 +439,56 @@ internal static partial class AudioDeviceService
         return (end > start ? trimmed[start..end] : trimmed[start..]).Replace('#', '.');
     }
 
-    [DllImport("ole32.dll")]
-    private static extern int PropVariantClear(ref PropVariant pvar);
+    [LibraryImport("ole32.dll")]
+    private static partial int PropVariantClear(ref PropVariant pvar);
 
-    private sealed partial class AudioDeviceWatcher : IMMNotificationClient, IDisposable
+    [LibraryImport("ole32.dll")]
+    private static partial int CoCreateInstance(
+        in Guid classId,
+        nint outer,
+        uint context,
+        in Guid interfaceId,
+        out nint instance);
+
+    private static IMMDeviceEnumerator CreateDeviceEnumerator()
+    {
+        return ActivateComObject<IMMDeviceEnumerator>(
+            MMDeviceEnumeratorClassId,
+            MMDeviceEnumeratorInterfaceId);
+    }
+
+    private static T ActivateComObject<T>(in Guid classId, in Guid interfaceId)
+        where T : class
+    {
+        Marshal.ThrowExceptionForHR(CoCreateInstance(
+            in classId,
+            0,
+            ClsctxInprocServer,
+            in interfaceId,
+            out var instance));
+
+        try
+        {
+            return (T)ComWrappers.GetOrCreateObjectForComInstance(
+                instance,
+                CreateObjectFlags.UniqueInstance);
+        }
+        finally
+        {
+            Marshal.Release(instance);
+        }
+    }
+
+    private static void ReleaseComObject(object instance)
+    {
+        if (instance is ComObject comObject)
+        {
+            comObject.FinalRelease();
+        }
+    }
+
+    [GeneratedComClass]
+    internal sealed partial class AudioDeviceWatcher : IMMNotificationClient, IDisposable
     {
         private readonly Action _onChanged;
         private readonly IMMDeviceEnumerator _enumerator;
@@ -437,8 +497,16 @@ internal static partial class AudioDeviceService
         public AudioDeviceWatcher(Action onChanged)
         {
             _onChanged = onChanged;
-            _enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
-            Marshal.ThrowExceptionForHR(_enumerator.RegisterEndpointNotificationCallback(this));
+            _enumerator = CreateDeviceEnumerator();
+            try
+            {
+                Marshal.ThrowExceptionForHR(_enumerator.RegisterEndpointNotificationCallback(this));
+            }
+            catch
+            {
+                ReleaseComObject(_enumerator);
+                throw;
+            }
         }
 
         public int OnDeviceStateChanged(string deviceId, uint newState)
@@ -497,7 +565,7 @@ internal static partial class AudioDeviceService
             }
             finally
             {
-                Marshal.ReleaseComObject(_enumerator);
+                ReleaseComObject(_enumerator);
                 GC.SuppressFinalize(this);
             }
         }
@@ -573,8 +641,22 @@ internal static partial class AudioDeviceService
             }
 
             _disposed = true;
-            MediaDevice.DefaultAudioRenderDeviceChanged -= _renderHandler;
-            MediaDevice.DefaultAudioCaptureDeviceChanged -= _captureHandler;
+            try
+            {
+                MediaDevice.DefaultAudioRenderDeviceChanged -= _renderHandler;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                MediaDevice.DefaultAudioCaptureDeviceChanged -= _captureHandler;
+            }
+            catch
+            {
+            }
+
             GC.SuppressFinalize(this);
         }
     }
@@ -599,7 +681,14 @@ internal static partial class AudioDeviceService
             _disposed = true;
             foreach (var disposable in _disposables)
             {
-                disposable.Dispose();
+                try
+                {
+                    disposable.Dispose();
+                }
+                catch
+                {
+                    // Continue unregistering the remaining notification sources.
+                }
             }
 
             GC.SuppressFinalize(this);
@@ -635,43 +724,31 @@ internal static partial class AudioDeviceService
         }
     }
 
-    private enum EDataFlow
+    internal enum EDataFlow
     {
         Render,
         Capture,
         All,
     }
 
-    private enum ERole
+    internal enum ERole
     {
         Console,
         Multimedia,
         Communications,
     }
 
-    private enum StorageAccessMode
+    internal enum StorageAccessMode
     {
         Read,
         Write,
         ReadWrite,
     }
 
-    [ComImport]
-    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-    private class MMDeviceEnumerator
-    {
-    }
-
-    [ComImport]
-    [Guid("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")]
-    private class PolicyConfigClient
-    {
-    }
-
-    [ComImport]
+    [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDeviceEnumerator
+    internal partial interface IMMDeviceEnumerator
     {
         [PreserveSig]
         int EnumAudioEndpoints(
@@ -692,10 +769,10 @@ internal static partial class AudioDeviceService
         int UnregisterEndpointNotificationCallback(IMMNotificationClient client);
     }
 
-    [ComImport]
+    [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("0BD7A1BE-7A1A-44DB-8397-C0DD2D112A8D")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDeviceCollection
+    internal partial interface IMMDeviceCollection
     {
         [PreserveSig]
         int GetCount(out uint count);
@@ -704,10 +781,10 @@ internal static partial class AudioDeviceService
         int Item(uint deviceNumber, out IMMDevice device);
     }
 
-    [ComImport]
+    [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("7991EEC9-7E89-4D85-8390-6C703CEC60C0")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMNotificationClient
+    internal partial interface IMMNotificationClient
     {
         [PreserveSig]
         int OnDeviceStateChanged([MarshalAs(UnmanagedType.LPWStr)] string deviceId, uint newState);
@@ -728,10 +805,10 @@ internal static partial class AudioDeviceService
         int OnPropertyValueChanged([MarshalAs(UnmanagedType.LPWStr)] string deviceId, PropertyKey key);
     }
 
-    [ComImport]
+    [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDevice
+    internal partial interface IMMDevice
     {
         [PreserveSig]
         int Activate(ref Guid iid, uint classContext, IntPtr activationParams, out IntPtr interfacePointer);
@@ -746,16 +823,19 @@ internal static partial class AudioDeviceService
         int GetState(out uint state);
     }
 
-    [ComImport]
+    [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("F8679F50-850A-41CF-9C72-430F290290C8")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IPolicyConfig
+    internal partial interface IPolicyConfig
     {
         [PreserveSig]
         int GetMixFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, out IntPtr format);
 
         [PreserveSig]
-        int GetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool defaultFormat, out IntPtr format);
+        int GetDeviceFormat(
+            [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+            [MarshalAs(UnmanagedType.Bool)] bool defaultFormat,
+            out IntPtr format);
 
         [PreserveSig]
         int ResetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
@@ -764,7 +844,11 @@ internal static partial class AudioDeviceService
         int SetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr endpointFormat, IntPtr mixFormat);
 
         [PreserveSig]
-        int GetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool defaultPeriod, out long defaultPeriodValue, out long minimumPeriodValue);
+        int GetProcessingPeriod(
+            [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+            [MarshalAs(UnmanagedType.Bool)] bool defaultPeriod,
+            out long defaultPeriodValue,
+            out long minimumPeriodValue);
 
         [PreserveSig]
         int SetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr period);
@@ -785,13 +869,15 @@ internal static partial class AudioDeviceService
         int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ERole role);
 
         [PreserveSig]
-        int SetEndpointVisibility([MarshalAs(UnmanagedType.LPWStr)] string deviceId, bool visible);
+        int SetEndpointVisibility(
+            [MarshalAs(UnmanagedType.LPWStr)] string deviceId,
+            [MarshalAs(UnmanagedType.Bool)] bool visible);
     }
 
-    [ComImport]
+    [GeneratedComInterface(StringMarshalling = StringMarshalling.Utf16)]
     [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
     [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IPropertyStore
+    internal partial interface IPropertyStore
     {
         [PreserveSig]
         int GetCount(out uint count);
@@ -810,14 +896,14 @@ internal static partial class AudioDeviceService
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct PropertyKey
+    internal struct PropertyKey
     {
         public Guid FormatId;
         public uint PropertyId;
     }
 
     [StructLayout(LayoutKind.Explicit)]
-    private struct PropVariant
+    internal struct PropVariant
     {
         [FieldOffset(0)]
         private readonly ushort _valueType;
@@ -835,7 +921,29 @@ internal static partial class AudioDeviceService
     }
 }
 
-internal sealed record AudioStatusSnapshot(string OutputDeviceName, string InputDeviceName, DateTimeOffset UpdatedAt);
+internal sealed record AudioStatusSnapshot(
+    string? OutputDeviceId,
+    string OutputDeviceName,
+    string? InputDeviceId,
+    string InputDeviceName,
+    DateTimeOffset UpdatedAt)
+{
+    public bool HasSameDevices(AudioStatusSnapshot other)
+    {
+        return string.Equals(OutputDeviceId, other.OutputDeviceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(InputDeviceId, other.InputDeviceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(OutputDeviceName, other.OutputDeviceName, StringComparison.Ordinal)
+            && string.Equals(InputDeviceName, other.InputDeviceName, StringComparison.Ordinal);
+    }
+
+    public bool IsReliable()
+    {
+        return !string.IsNullOrWhiteSpace(OutputDeviceId)
+            && !string.IsNullOrWhiteSpace(InputDeviceId)
+            && OutputDeviceName != "Unavailable"
+            && InputDeviceName != "Unavailable";
+    }
+}
 
 internal enum AudioDeviceKind
 {

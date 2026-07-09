@@ -11,13 +11,21 @@ namespace AudioStatusExtension;
 
 public partial class AudioStatusExtensionCommandsProvider : CommandProvider
 {
+    private static readonly TimeSpan ListenerHealthCheckInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ListenerStaleAfter = TimeSpan.FromMinutes(30);
     private readonly ICommandItem[] _commands;
     private readonly AudioStatusExtensionPage _page;
     private readonly AudioStatusDockBand _dockBand;
-    private readonly IDisposable _audioDeviceWatcher;
     private readonly Timer _refreshDebounceTimer;
+    private readonly Timer _listenerHealthTimer;
     private readonly Action _scheduleRefreshCallback;
     private readonly object _refreshLock = new();
+    private IDisposable? _audioDeviceWatcher;
+    private AudioStatusSnapshot _cachedSnapshot;
+    private AudioStatusSnapshot? _unreliableSnapshotCandidate;
+    private long _lastCallbackUtcTicks;
+    private bool _listenerRegistrationSucceeded;
+    private bool _disposed;
 
     public AudioStatusExtensionCommandsProvider()
     {
@@ -30,7 +38,14 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
             new CommandItem(_page) { Title = DisplayName },
         ];
         _refreshDebounceTimer = new Timer(Refresh, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-        _audioDeviceWatcher = AudioDeviceService.WatchDefaultDeviceChanges(_scheduleRefreshCallback);
+        _cachedSnapshot = AudioDeviceService.GetSnapshot();
+        RecordCallbackActivity();
+        InitializeListener("startup");
+        _listenerHealthTimer = new Timer(
+            CheckListenerHealth,
+            null,
+            ListenerHealthCheckInterval,
+            ListenerHealthCheckInterval);
     }
 
     public override ICommandItem[] TopLevelCommands()
@@ -45,8 +60,19 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
 
     public override void Dispose()
     {
-        _audioDeviceWatcher.Dispose();
-        _refreshDebounceTimer.Dispose();
+        lock (_refreshLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _listenerHealthTimer.Dispose();
+            _refreshDebounceTimer.Dispose();
+            DisposeListener();
+        }
+
         base.Dispose();
         GC.SuppressFinalize(this);
     }
@@ -69,23 +95,40 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
         {
             if (weakProvider.TryGetTarget(out var target))
             {
-                target.ScheduleRefresh();
+                target.OnAudioDeviceCallback();
             }
         };
+    }
+
+    private void OnAudioDeviceCallback()
+    {
+        RecordCallbackActivity();
+        Log("Audio device callback fired.");
+        ScheduleRefresh();
     }
 
     private void Refresh()
     {
         lock (_refreshLock)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             try
             {
+                // Always ask Windows for the current defaults. The callback is only a prompt;
+                // it is never the source of truth.
+                _cachedSnapshot = AudioDeviceService.GetSnapshot();
                 _dockBand.Refresh();
+                _page.Refresh();
             }
-            catch
+            catch (Exception ex)
             {
                 // Timer and native audio callbacks run outside the Command Palette call stack.
                 // A transient refresh failure must not terminate the extension or its watcher.
+                Log($"Status refresh failed: {ex.Message}");
             }
         }
     }
@@ -93,5 +136,123 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
     private void Refresh(object? state)
     {
         Refresh();
+    }
+
+    private void CheckListenerHealth(object? state)
+    {
+        lock (_refreshLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            try
+            {
+                var currentSnapshot = AudioDeviceService.GetSnapshot();
+                var stateChanged = IsConfirmedStateChange(currentSnapshot);
+                var lastCallbackAt = new DateTimeOffset(
+                    Interlocked.Read(ref _lastCallbackUtcTicks),
+                    TimeSpan.Zero);
+                var callbackStale = DateTimeOffset.UtcNow - lastCallbackAt >= ListenerStaleAfter;
+
+                if (stateChanged)
+                {
+                    Log("Current Windows audio state differs from cached state; refreshing and reinitializing listener.");
+                    _cachedSnapshot = currentSnapshot;
+                    _dockBand.Refresh();
+                    _page.Refresh();
+                }
+
+                if (stateChanged || callbackStale || !_listenerRegistrationSucceeded)
+                {
+                    var reason = stateChanged
+                        ? "missed device change"
+                        : _listenerRegistrationSucceeded
+                            ? "callback health timeout"
+                            : "registration retry";
+                    InitializeListener(reason);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"Listener health check failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void InitializeListener(string reason)
+    {
+        // Unregister the old callback before registering its replacement, so there is
+        // never more than one active registration owned by this provider.
+        DisposeListener();
+        _listenerRegistrationSucceeded = AudioDeviceService.TryWatchDefaultDeviceChanges(
+            _scheduleRefreshCallback,
+            out var watcher);
+        _audioDeviceWatcher = watcher;
+        RecordCallbackActivity();
+        Log(_listenerRegistrationSucceeded
+            ? $"Audio device listener registered ({reason})."
+            : $"Audio device listener registration failed ({reason}); retrying on the next health check.");
+    }
+
+    private void RecordCallbackActivity()
+    {
+        Interlocked.Exchange(ref _lastCallbackUtcTicks, DateTimeOffset.UtcNow.Ticks);
+    }
+
+    private void DisposeListener()
+    {
+        var watcher = _audioDeviceWatcher;
+        _audioDeviceWatcher = null;
+        _listenerRegistrationSucceeded = false;
+        if (watcher is null)
+        {
+            return;
+        }
+
+        try
+        {
+            watcher.Dispose();
+            Log("Audio device listener unregistered.");
+        }
+        catch (Exception ex)
+        {
+            // A failed native unregistration must not prevent shutdown or a replacement
+            // listener from being created.
+            Log($"Audio device listener unregistration failed: {ex.Message}");
+        }
+    }
+
+    private bool IsConfirmedStateChange(AudioStatusSnapshot currentSnapshot)
+    {
+        if (_cachedSnapshot.HasSameDevices(currentSnapshot))
+        {
+            _unreliableSnapshotCandidate = null;
+            return false;
+        }
+
+        if (currentSnapshot.IsReliable())
+        {
+            _unreliableSnapshotCandidate = null;
+            return true;
+        }
+
+        // A transient Core Audio query failure can produce an unavailable snapshot.
+        // Require the same result twice before treating it as real device state.
+        if (_unreliableSnapshotCandidate?.HasSameDevices(currentSnapshot) == true)
+        {
+            _unreliableSnapshotCandidate = null;
+            return true;
+        }
+
+        _unreliableSnapshotCandidate = currentSnapshot;
+        Log("Ignoring one unconfirmed unavailable audio snapshot.");
+        return false;
+    }
+
+    private static void Log(string message)
+    {
+        Console.WriteLine($"[{DateTimeOffset.Now:O}] [AudioStatus] {message}");
     }
 }
