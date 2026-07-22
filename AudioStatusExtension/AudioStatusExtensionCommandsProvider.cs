@@ -15,6 +15,8 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
     private static readonly TimeSpan ListenerStaleAfter = TimeSpan.FromMinutes(30);
     private readonly ICommandItem[] _commands;
     private readonly AudioStatusExtensionPage _page;
+    private readonly AudioDevicesPage _outputDevicesPage;
+    private readonly AudioDevicesPage _inputDevicesPage;
     private readonly AudioStatusDockBand _dockBand;
     private readonly Timer _refreshDebounceTimer;
     private readonly Timer _listenerHealthTimer;
@@ -33,9 +35,23 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
         Icon = IconHelpers.FromRelativePath("Public\\StoreLogo.png");
         _scheduleRefreshCallback = CreateWeakScheduleRefreshCallback(this);
         _page = new AudioStatusExtensionPage(_scheduleRefreshCallback);
+        _outputDevicesPage = new AudioDevicesPage(AudioDeviceKind.Output, _scheduleRefreshCallback);
+        _inputDevicesPage = new AudioDevicesPage(AudioDeviceKind.Input, _scheduleRefreshCallback);
         _dockBand = new AudioStatusDockBand(_scheduleRefreshCallback);
         _commands = [
             new CommandItem(_page) { Title = DisplayName },
+            new CommandItem(_outputDevicesPage)
+            {
+                Title = "Switch output device",
+                Subtitle = "Choose the default speakers or headphones",
+                Icon = new IconInfo("\uE767"),
+            },
+            new CommandItem(_inputDevicesPage)
+            {
+                Title = "Switch input device",
+                Subtitle = "Choose the default microphone",
+                Icon = new IconInfo("\uE720"),
+            },
         ];
         _refreshDebounceTimer = new Timer(Refresh, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         _cachedSnapshot = AudioDeviceService.GetSnapshot();
@@ -123,6 +139,8 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
                 _cachedSnapshot = AudioDeviceService.GetSnapshot();
                 _dockBand.Refresh();
                 _page.Refresh();
+                _outputDevicesPage.RefreshItems();
+                _inputDevicesPage.RefreshItems();
             }
             catch (Exception ex)
             {

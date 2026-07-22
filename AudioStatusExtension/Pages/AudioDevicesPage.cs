@@ -15,7 +15,7 @@ internal sealed partial class AudioDevicesPage : ListPage
         _onChanged = onChanged;
         Icon = new IconInfo(kind == AudioDeviceKind.Output ? "\uE767" : "\uE720");
         Title = $"{GetKindLabel(kind)} devices";
-        Name = Title;
+        Name = $"Switch {GetKindLabel(kind).ToLowerInvariant()} device";
     }
 
     public override IListItem[] GetItems()
@@ -47,6 +47,11 @@ internal sealed partial class AudioDevicesPage : ListPage
         }
 
         return items;
+    }
+
+    public void RefreshItems()
+    {
+        RaiseItemsChanged();
     }
 
     private static string GetKindLabel(AudioDeviceKind kind)
