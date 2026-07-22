@@ -9,7 +9,10 @@ Project repository: https://github.com/hansek/AudioStatusExtension
 - Shows current default output and input devices.
 - Lists active playback and recording endpoints.
 - Switches default output or input devices from Command Palette.
+- Provides top-level commands for switching output and input devices directly from search.
 - Provides a dock band with current audio device status.
+
+![Switch audio devices from Command Palette](store-assets/final/05-real-switch-commands.png)
 
 ## Requirements
 
