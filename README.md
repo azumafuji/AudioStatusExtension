@@ -12,7 +12,7 @@ Project repository: https://github.com/hansek/AudioStatusExtension
 - Provides top-level commands for switching output and input devices directly from search.
 - Provides a dock band with current audio device status.
 
-![Switch audio devices from Command Palette](store-assets/final/05-real-switch-commands.png)
+![Switch audio devices from Command Palette](store-assets/final/01-switch-commands.png)
 
 ## Requirements
 
