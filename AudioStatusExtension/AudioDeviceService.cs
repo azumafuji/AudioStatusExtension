@@ -168,7 +168,7 @@ internal static partial class AudioDeviceService
 
             try
             {
-                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var device));
+                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Console, out var device));
 
                 try
                 {
@@ -224,7 +224,7 @@ internal static partial class AudioDeviceService
         try
         {
             enumerator = CreateDeviceEnumerator();
-            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var device));
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Console, out var device));
 
             try
             {
@@ -317,7 +317,7 @@ internal static partial class AudioDeviceService
         try
         {
             enumerator = CreateDeviceEnumerator();
-            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Multimedia, out var device));
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Console, out var device));
 
             try
             {
