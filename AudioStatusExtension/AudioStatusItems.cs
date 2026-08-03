@@ -85,16 +85,16 @@ internal static class AudioStatusItems
 
 internal sealed partial class AudioStatusDockBand : WrappedDockItem
 {
-    private readonly Action _onChanged;
-
     public AudioStatusDockBand(Action onChanged)
         : base(AudioStatusItems.Create(onChanged), "audio-status.default-devices", "Audio Status")
     {
-        _onChanged = onChanged;
     }
 
     public void Refresh()
     {
-        Items = AudioStatusItems.Create(_onChanged);
+        // WrappedDockItem does not expose an ItemsChanged notification. Keep the
+        // existing ListItem instances and update their observable properties so the
+        // host receives the change through each item's PropChanged event.
+        AudioStatusItems.UpdateCurrentDeviceTitles(Items);
     }
 }
