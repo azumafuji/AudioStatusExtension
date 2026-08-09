@@ -1,5 +1,10 @@
 # Release notes
 
+## 0.1.11
+
+- Added a setting to choose between Windows display names and audio adapter names throughout the extension.
+- Added separate commands for switching the default communications output and input devices.
+
 ## 0.1.10
 
 - Fixed the dock so its displayed input and output device names update immediately when the Windows defaults change.
