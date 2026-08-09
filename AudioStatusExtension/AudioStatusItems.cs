@@ -17,7 +17,7 @@ internal static class AudioStatusItems
         ];
     }
 
-    public static void UpdateCurrentDeviceTitles(IListItem[] items)
+    public static void UpdateCurrentDeviceItems(IListItem[] items, Action onChanged)
     {
         if (items.Length < 2)
         {
@@ -25,8 +25,8 @@ internal static class AudioStatusItems
         }
 
         var snapshot = AudioDeviceService.GetSnapshot();
-        UpdateTitle(items[0], snapshot.OutputDeviceName);
-        UpdateTitle(items[1], snapshot.InputDeviceName);
+        UpdateItem(items[0], AudioDeviceKind.Output, "Output", snapshot.OutputDeviceName, "\uE767", onChanged);
+        UpdateItem(items[1], AudioDeviceKind.Input, "Input", snapshot.InputDeviceName, "\uE720", onChanged);
     }
 
     private static ListItem CreateItem(AudioDeviceKind kind, string deviceName, string iconGlyph, Action onChanged)
@@ -74,20 +74,40 @@ internal static class AudioStatusItems
         return commands;
     }
 
-    private static void UpdateTitle(IListItem item, string title)
+    private static void UpdateItem(
+        IListItem item,
+        AudioDeviceKind kind,
+        string kindLabel,
+        string title,
+        string iconGlyph,
+        Action onChanged)
     {
-        if (item is ListItem listItem && listItem.Title != title)
+        if (item is not ListItem listItem)
+        {
+            return;
+        }
+
+        if (listItem.Title != title)
         {
             listItem.Title = title;
         }
+
+        listItem.MoreCommands = CreateDeviceContextCommands(
+            kind,
+            kindLabel,
+            new IconInfo(iconGlyph),
+            onChanged);
     }
 }
 
 internal sealed partial class AudioStatusDockBand : WrappedDockItem
 {
+    private readonly Action _onChanged;
+
     public AudioStatusDockBand(Action onChanged)
         : base(AudioStatusItems.Create(onChanged), "audio-status.default-devices", "Audio Status")
     {
+        _onChanged = onChanged;
     }
 
     public void Refresh()
@@ -95,6 +115,6 @@ internal sealed partial class AudioStatusDockBand : WrappedDockItem
         // WrappedDockItem does not expose an ItemsChanged notification. Keep the
         // existing ListItem instances and update their observable properties so the
         // host receives the change through each item's PropChanged event.
-        AudioStatusItems.UpdateCurrentDeviceTitles(Items);
+        AudioStatusItems.UpdateCurrentDeviceItems(Items, _onChanged);
     }
 }

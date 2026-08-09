@@ -3,6 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
@@ -11,6 +12,9 @@ namespace AudioStatusExtension;
 
 public partial class AudioStatusExtensionCommandsProvider : CommandProvider
 {
+    private const string DeviceNameFormatKey = "deviceNameFormat";
+    private const string WindowsDisplayNameValue = "windowsDisplayName";
+    private const string AudioAdapterValue = "audioAdapter";
     private static readonly TimeSpan ListenerHealthCheckInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ListenerStaleAfter = TimeSpan.FromMinutes(30);
     private readonly ICommandItem[] _commands;
@@ -22,6 +26,7 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
     private readonly Timer _listenerHealthTimer;
     private readonly Action _scheduleRefreshCallback;
     private readonly object _refreshLock = new();
+    private readonly Settings _extensionSettings = new();
     private IDisposable? _audioDeviceWatcher;
     private AudioStatusSnapshot _cachedSnapshot;
     private AudioStatusSnapshot? _unreliableSnapshotCandidate;
@@ -33,6 +38,20 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
     {
         DisplayName = "Audio Status";
         Icon = IconHelpers.FromRelativePath("Public\\StoreLogo.png");
+        _extensionSettings.Add(new ChoiceSetSetting(
+            DeviceNameFormatKey,
+            new List<ChoiceSetSetting.Choice>
+            {
+                new("Windows display name", WindowsDisplayNameValue),
+                new("Audio adapter", AudioAdapterValue),
+            })
+        {
+            Label = "Device name format",
+            Description = "Choose how audio devices are identified in Command Palette.",
+        });
+        Settings = _extensionSettings;
+        ApplyDeviceNameFormat();
+        _extensionSettings.SettingsChanged += OnSettingsChanged;
         _scheduleRefreshCallback = CreateWeakScheduleRefreshCallback(this);
         _page = new AudioStatusExtensionPage(_scheduleRefreshCallback);
         _outputDevicesPage = new AudioDevicesPage(AudioDeviceKind.Output, _scheduleRefreshCallback);
@@ -84,6 +103,7 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
             }
 
             _disposed = true;
+            _extensionSettings.SettingsChanged -= OnSettingsChanged;
             _listenerHealthTimer.Dispose();
             _refreshDebounceTimer.Dispose();
             DisposeListener();
@@ -102,6 +122,20 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
         catch (ObjectDisposedException)
         {
         }
+    }
+
+    private void OnSettingsChanged(object sender, Settings args)
+    {
+        ApplyDeviceNameFormat();
+        ScheduleRefresh();
+    }
+
+    private void ApplyDeviceNameFormat()
+    {
+        AudioDeviceService.DeviceNameFormat =
+            _extensionSettings.GetSetting<string>(DeviceNameFormatKey) == AudioAdapterValue
+                ? AudioDeviceNameFormat.AudioAdapter
+                : AudioDeviceNameFormat.WindowsDisplayName;
     }
 
     private static Action CreateWeakScheduleRefreshCallback(AudioStatusExtensionCommandsProvider provider)
@@ -180,6 +214,8 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
                     _cachedSnapshot = currentSnapshot;
                     _dockBand.Refresh();
                     _page.Refresh();
+                    _outputDevicesPage.RefreshItems();
+                    _inputDevicesPage.RefreshItems();
                 }
 
                 if (stateChanged || callbackStale || !_listenerRegistrationSucceeded)

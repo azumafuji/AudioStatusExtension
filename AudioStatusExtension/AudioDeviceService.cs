@@ -17,13 +17,22 @@ internal static partial class AudioDeviceService
     private static readonly Guid PolicyConfigClassId = new("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9");
     private static readonly Guid PolicyConfigInterfaceId = new("F8679F50-850A-41CF-9C72-430F290290C8");
     private static readonly StrategyBasedComWrappers ComWrappers = new();
-    private static readonly string[] RegistryDeviceNameProperties =
+    private static readonly string[] WindowsDisplayNameRegistryProperties =
+    [
+        "{a45c254e-df1c-4efd-8020-67d146a850e0},14",
+        "{026e516e-b814-414b-83cd-856d6fef4822},2",
+        "{b3f8fa53-0004-438e-9003-51a46e139bfc},6",
+        "{a45c254e-df1c-4efd-8020-67d146a850e0},2",
+    ];
+    private static readonly string[] AudioAdapterNameRegistryProperties =
     [
         "{026e516e-b814-414b-83cd-856d6fef4822},2",
         "{b3f8fa53-0004-438e-9003-51a46e139bfc},6",
         "{a45c254e-df1c-4efd-8020-67d146a850e0},14",
         "{a45c254e-df1c-4efd-8020-67d146a850e0},2",
     ];
+
+    public static AudioDeviceNameFormat DeviceNameFormat { get; set; } = AudioDeviceNameFormat.WindowsDisplayName;
 
     public static bool TryWatchDefaultDeviceChanges(Action onChanged, out IDisposable watcher)
     {
@@ -113,8 +122,8 @@ internal static partial class AudioDeviceService
                         }
                     }
 
-                    var registryDevices = GetRegistryDevices(kind, defaultDeviceId);
-                    return registryDevices.Length > result.Count ? registryDevices : result.ToArray();
+                    AddMissingRegistryDevices(result, GetRegistryDevices(kind, defaultDeviceId));
+                    return result.ToArray();
                 }
                 finally
                 {
@@ -285,6 +294,27 @@ internal static partial class AudioDeviceService
         return endpointKey.GetValue("DeviceState") is int state && state == DeviceStateActive;
     }
 
+    private static void AddMissingRegistryDevices(List<AudioDeviceInfo> devices, AudioDeviceInfo[] registryDevices)
+    {
+        foreach (var registryDevice in registryDevices)
+        {
+            var alreadyPresent = false;
+            foreach (var device in devices)
+            {
+                if (IsSameEndpointId(device.Id, registryDevice.Id))
+                {
+                    alreadyPresent = true;
+                    break;
+                }
+            }
+
+            if (!alreadyPresent)
+            {
+                devices.Add(registryDevice);
+            }
+        }
+    }
+
     private static string GetRegistryDeviceName(RegistryKey endpointKey)
     {
         using var propertiesKey = endpointKey.OpenSubKey("Properties");
@@ -293,15 +323,43 @@ internal static partial class AudioDeviceService
             return "Unknown device";
         }
 
-        foreach (var propertyName in RegistryDeviceNameProperties)
+        if (DeviceNameFormat == AudioDeviceNameFormat.WindowsDisplayName)
         {
-            if (propertiesKey.GetValue(propertyName) is string value && !string.IsNullOrWhiteSpace(value))
+            var friendlyName = GetRegistryString(propertiesKey, WindowsDisplayNameRegistryProperties[0]);
+            if (friendlyName is not null)
             {
-                return CleanDeviceName(value);
+                return friendlyName;
+            }
+
+            var customName = GetRegistryString(propertiesKey, WindowsDisplayNameRegistryProperties[1]);
+            var endpointName = GetRegistryString(propertiesKey, WindowsDisplayNameRegistryProperties[2]);
+            var deviceDescription = GetRegistryString(propertiesKey, WindowsDisplayNameRegistryProperties[3]);
+            var displayName = customName ?? deviceDescription;
+            if (displayName is not null && endpointName is not null)
+            {
+                return $"{displayName} ({endpointName})";
+            }
+
+            return displayName ?? endpointName ?? "Unknown device";
+        }
+
+        foreach (var propertyName in AudioAdapterNameRegistryProperties)
+        {
+            var value = GetRegistryString(propertiesKey, propertyName);
+            if (value is not null)
+            {
+                return value;
             }
         }
 
         return "Unknown device";
+    }
+
+    private static string? GetRegistryString(RegistryKey propertiesKey, string propertyName)
+    {
+        return propertiesKey.GetValue(propertyName) is string value && !string.IsNullOrWhiteSpace(value)
+            ? value.Trim()
+            : null;
     }
 
     private static string BuildEndpointId(AudioDeviceKind kind, string endpointKeyName)
@@ -374,7 +432,10 @@ internal static partial class AudioDeviceService
 
     private static string GetDeviceName(IPropertyStore store)
     {
-        foreach (var propertyKey in PropertyKeys.DeviceNames)
+        var propertyKeys = DeviceNameFormat == AudioDeviceNameFormat.AudioAdapter
+            ? PropertyKeys.AudioAdapterNames
+            : PropertyKeys.WindowsDisplayNames;
+        foreach (var propertyKey in propertyKeys)
         {
             var key = propertyKey;
             var result = store.GetValue(ref key, out var value);
@@ -544,6 +605,18 @@ internal static partial class AudioDeviceService
 
         public int OnPropertyValueChanged(string deviceId, PropertyKey key)
         {
+            if (PropertyKeys.IsDeviceName(key))
+            {
+                try
+                {
+                    _onChanged();
+                }
+                catch
+                {
+                    // Exceptions must never escape a native Core Audio callback.
+                }
+            }
+
             return 0;
         }
 
@@ -706,13 +779,33 @@ internal static partial class AudioDeviceService
 
     private static class PropertyKeys
     {
-        public static readonly PropertyKey[] DeviceNames =
+        public static readonly PropertyKey[] WindowsDisplayNames =
+        [
+            Create("a45c254e-df1c-4efd-8020-67d146a850e0", 14),
+            Create("026e516e-b814-414b-83cd-856d6fef4822", 2),
+            Create("b3f8fa53-0004-438e-9003-51a46e139bfc", 6),
+            Create("a45c254e-df1c-4efd-8020-67d146a850e0", 2),
+        ];
+        public static readonly PropertyKey[] AudioAdapterNames =
         [
             Create("026e516e-b814-414b-83cd-856d6fef4822", 2),
             Create("b3f8fa53-0004-438e-9003-51a46e139bfc", 6),
             Create("a45c254e-df1c-4efd-8020-67d146a850e0", 14),
             Create("a45c254e-df1c-4efd-8020-67d146a850e0", 2),
         ];
+
+        public static bool IsDeviceName(PropertyKey key)
+        {
+            foreach (var candidate in WindowsDisplayNames)
+            {
+                if (candidate.FormatId == key.FormatId && candidate.PropertyId == key.PropertyId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         private static PropertyKey Create(string formatId, uint propertyId)
         {
@@ -949,6 +1042,12 @@ internal enum AudioDeviceKind
 {
     Output,
     Input,
+}
+
+internal enum AudioDeviceNameFormat
+{
+    WindowsDisplayName,
+    AudioAdapter,
 }
 
 internal sealed record AudioDeviceInfo(string Id, string Name, bool IsDefault);
