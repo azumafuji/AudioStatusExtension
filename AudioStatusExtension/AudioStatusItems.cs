@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Microsoft.CommandPalette.Extensions;
 using Microsoft.CommandPalette.Extensions.Toolkit;
 
@@ -12,8 +13,21 @@ internal static class AudioStatusItems
 
         return
         [
-            CreateItem(AudioDeviceKind.Output, snapshot.OutputDeviceName, "\uE767", onChanged),
-            CreateItem(AudioDeviceKind.Input, snapshot.InputDeviceName, "\uE720", onChanged),
+            CreateItem(AudioDeviceTarget.Output, snapshot.OutputDeviceName, onChanged),
+            CreateItem(AudioDeviceTarget.CommunicationsOutput, snapshot.CommunicationsOutputDeviceName, onChanged),
+            CreateItem(AudioDeviceTarget.Input, snapshot.InputDeviceName, onChanged),
+            CreateItem(AudioDeviceTarget.CommunicationsInput, snapshot.CommunicationsInputDeviceName, onChanged),
+        ];
+    }
+
+    public static IListItem[] CreateDockItems(Action onChanged)
+    {
+        var snapshot = AudioDeviceService.GetSnapshot();
+
+        return
+        [
+            CreateItem(AudioDeviceTarget.Output, snapshot.OutputDeviceName, onChanged),
+            CreateItem(AudioDeviceTarget.Input, snapshot.InputDeviceName, onChanged),
         ];
     }
 
@@ -25,61 +39,74 @@ internal static class AudioStatusItems
         }
 
         var snapshot = AudioDeviceService.GetSnapshot();
-        UpdateItem(items[0], AudioDeviceKind.Output, "Output", snapshot.OutputDeviceName, "\uE767", onChanged);
-        UpdateItem(items[1], AudioDeviceKind.Input, "Input", snapshot.InputDeviceName, "\uE720", onChanged);
+        UpdateItem(items[0], AudioDeviceTarget.Output, snapshot.OutputDeviceName, onChanged);
+        UpdateItem(items[1], AudioDeviceTarget.Input, snapshot.InputDeviceName, onChanged);
     }
 
-    private static ListItem CreateItem(AudioDeviceKind kind, string deviceName, string iconGlyph, Action onChanged)
+    private static ListItem CreateItem(AudioDeviceTarget target, string deviceName, Action onChanged)
     {
-        var title = kind == AudioDeviceKind.Output ? "Output" : "Input";
-        var command = new AudioDevicesPage(kind, onChanged);
-        var icon = new IconInfo(iconGlyph);
+        var title = AudioDevicesPage.GetTargetLabel(target);
+        var command = new AudioDevicesPage(target, onChanged);
+        var icon = new IconInfo(AudioDevicesPage.GetIconGlyph(target));
 
         return new ListItem(command)
         {
             Title = deviceName,
             Subtitle = title,
             Icon = icon,
-            MoreCommands = CreateDeviceContextCommands(kind, title, icon, onChanged),
+            MoreCommands = CreateDeviceContextCommands(target, title, icon, onChanged),
         };
     }
 
-    private static IContextItem[] CreateDeviceContextCommands(AudioDeviceKind kind, string title, IconInfo icon, Action onChanged)
+    private static IContextItem[] CreateDeviceContextCommands(
+        AudioDeviceTarget target,
+        string title,
+        IconInfo icon,
+        Action onChanged)
     {
-        var devices = AudioDeviceService.GetDevices(kind);
+        var devices = AudioDeviceService.GetDevices(target);
+        var commands = new List<IContextItem>(devices.Length + 1);
         if (devices.Length == 0)
         {
-            return
-            [
-                new CommandContextItem(new AudioDevicesPage(kind, onChanged))
+            commands.Add(
+                new CommandContextItem(new AudioDevicesPage(target, onChanged))
                 {
                     Title = $"Select {title} device",
                     Icon = icon,
-                },
-            ];
+                });
         }
-
-        var commands = new IContextItem[devices.Length];
-        for (var index = 0; index < devices.Length; index++)
+        else
         {
-            var device = devices[index];
-            commands[index] = new CommandContextItem(new SetDefaultAudioDeviceCommand(kind, device, onChanged))
+            foreach (var device in devices)
             {
-                Title = device.Name,
-                Subtitle = device.IsDefault ? $"{title} - current" : title,
-                Icon = icon,
-            };
+                commands.Add(new CommandContextItem(new SetDefaultAudioDeviceCommand(target, device, onChanged))
+                {
+                    Title = device.Name,
+                    Subtitle = device.IsDefault ? $"{title} - current" : title,
+                    Icon = icon,
+                });
+            }
         }
 
-        return commands;
+        if (target.Role == AudioEndpointRole.Default)
+        {
+            var communicationsTarget = target.Kind == AudioDeviceKind.Output
+                ? AudioDeviceTarget.CommunicationsOutput
+                : AudioDeviceTarget.CommunicationsInput;
+            commands.Add(new CommandContextItem(new AudioDevicesPage(communicationsTarget, onChanged))
+            {
+                Title = $"Select {AudioDevicesPage.GetTargetLabel(communicationsTarget).ToLowerInvariant()} device",
+                Icon = icon,
+            });
+        }
+
+        return [.. commands];
     }
 
     private static void UpdateItem(
         IListItem item,
-        AudioDeviceKind kind,
-        string kindLabel,
+        AudioDeviceTarget target,
         string title,
-        string iconGlyph,
         Action onChanged)
     {
         if (item is not ListItem listItem)
@@ -93,9 +120,9 @@ internal static class AudioStatusItems
         }
 
         listItem.MoreCommands = CreateDeviceContextCommands(
-            kind,
-            kindLabel,
-            new IconInfo(iconGlyph),
+            target,
+            AudioDevicesPage.GetTargetLabel(target),
+            new IconInfo(AudioDevicesPage.GetIconGlyph(target)),
             onChanged);
     }
 }
@@ -105,7 +132,7 @@ internal sealed partial class AudioStatusDockBand : WrappedDockItem
     private readonly Action _onChanged;
 
     public AudioStatusDockBand(Action onChanged)
-        : base(AudioStatusItems.Create(onChanged), "audio-status.default-devices", "Audio Status")
+        : base(AudioStatusItems.CreateDockItems(onChanged), "audio-status.default-devices", "Audio Status")
     {
         _onChanged = onChanged;
     }

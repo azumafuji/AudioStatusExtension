@@ -72,27 +72,33 @@ internal static partial class AudioDeviceService
 
     public static AudioStatusSnapshot GetSnapshot()
     {
-        var outputDeviceId = GetDefaultDeviceId(EDataFlow.Render);
-        var inputDeviceId = GetDefaultDeviceId(EDataFlow.Capture);
+        var outputDeviceId = GetDefaultDeviceId(AudioDeviceTarget.Output);
+        var communicationsOutputDeviceId = GetDefaultDeviceId(AudioDeviceTarget.CommunicationsOutput);
+        var inputDeviceId = GetDefaultDeviceId(AudioDeviceTarget.Input);
+        var communicationsInputDeviceId = GetDefaultDeviceId(AudioDeviceTarget.CommunicationsInput);
         return new AudioStatusSnapshot(
             outputDeviceId,
-            GetDefaultDeviceName(AudioDeviceKind.Output),
+            GetDefaultDeviceName(AudioDeviceTarget.Output),
+            communicationsOutputDeviceId,
+            GetDefaultDeviceName(AudioDeviceTarget.CommunicationsOutput),
             inputDeviceId,
-            GetDefaultDeviceName(AudioDeviceKind.Input),
+            GetDefaultDeviceName(AudioDeviceTarget.Input),
+            communicationsInputDeviceId,
+            GetDefaultDeviceName(AudioDeviceTarget.CommunicationsInput),
             DateTimeOffset.Now);
     }
 
-    public static AudioDeviceInfo[] GetDevices(AudioDeviceKind kind)
+    public static AudioDeviceInfo[] GetDevices(AudioDeviceTarget target)
     {
         if (!OperatingSystem.IsWindows())
         {
             return [];
         }
 
+        var defaultDeviceId = GetDefaultDeviceId(target);
         try
         {
-            var dataFlow = ToDataFlow(kind);
-            var defaultDeviceId = GetDefaultDeviceId(dataFlow);
+            var dataFlow = ToDataFlow(target.Kind);
             var enumerator = CreateDeviceEnumerator();
 
             try
@@ -122,7 +128,7 @@ internal static partial class AudioDeviceService
                         }
                     }
 
-                    AddMissingRegistryDevices(result, GetRegistryDevices(kind, defaultDeviceId));
+                    AddMissingRegistryDevices(result, GetRegistryDevices(target, defaultDeviceId));
                     return result.ToArray();
                 }
                 finally
@@ -137,11 +143,11 @@ internal static partial class AudioDeviceService
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
         {
-            return GetRegistryDevices(kind, null);
+            return GetRegistryDevices(target, defaultDeviceId);
         }
     }
 
-    public static void SetDefaultDevice(AudioDeviceKind kind, string deviceId)
+    public static void SetDefaultDevice(AudioDeviceTarget target, string deviceId)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -152,9 +158,15 @@ internal static partial class AudioDeviceService
 
         try
         {
-            Marshal.ThrowExceptionForHR(policyConfig.SetDefaultEndpoint(deviceId, ERole.Console));
-            Marshal.ThrowExceptionForHR(policyConfig.SetDefaultEndpoint(deviceId, ERole.Multimedia));
-            Marshal.ThrowExceptionForHR(policyConfig.SetDefaultEndpoint(deviceId, ERole.Communications));
+            if (target.Role == AudioEndpointRole.Communications)
+            {
+                Marshal.ThrowExceptionForHR(policyConfig.SetDefaultEndpoint(deviceId, ERole.Communications));
+            }
+            else
+            {
+                Marshal.ThrowExceptionForHR(policyConfig.SetDefaultEndpoint(deviceId, ERole.Console));
+                Marshal.ThrowExceptionForHR(policyConfig.SetDefaultEndpoint(deviceId, ERole.Multimedia));
+            }
         }
         finally
         {
@@ -162,9 +174,9 @@ internal static partial class AudioDeviceService
         }
     }
 
-    private static string GetDefaultDeviceName(AudioDeviceKind kind)
+    private static string GetDefaultDeviceName(AudioDeviceTarget target)
     {
-        var dataFlow = ToDataFlow(kind);
+        var dataFlow = ToDataFlow(target.Kind);
 
         if (!OperatingSystem.IsWindows())
         {
@@ -177,7 +189,7 @@ internal static partial class AudioDeviceService
 
             try
             {
-                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Console, out var device));
+                Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ToERole(target.Role), out var device));
 
                 try
                 {
@@ -204,16 +216,16 @@ internal static partial class AudioDeviceService
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
         {
-            return GetDefaultDeviceNameFallback(kind);
+            return GetDefaultDeviceNameFallback(target);
         }
     }
 
-    private static string GetDefaultDeviceNameFallback(AudioDeviceKind kind)
+    private static string GetDefaultDeviceNameFallback(AudioDeviceTarget target)
     {
-        var defaultDeviceId = GetDefaultDeviceIdFromMediaDevice(kind);
+        var defaultDeviceId = GetDefaultDeviceIdFromMediaDevice(target);
         if (!string.IsNullOrWhiteSpace(defaultDeviceId))
         {
-            foreach (var device in GetRegistryDevices(kind, defaultDeviceId))
+            foreach (var device in GetRegistryDevices(target, defaultDeviceId))
             {
                 if (IsSameEndpointId(device.Id, defaultDeviceId))
                 {
@@ -225,15 +237,15 @@ internal static partial class AudioDeviceService
         return "Unavailable";
     }
 
-    private static AudioDeviceInfo[] GetDefaultDeviceFallback(AudioDeviceKind kind)
+    private static AudioDeviceInfo[] GetDefaultDeviceFallback(AudioDeviceTarget target)
     {
-        var dataFlow = ToDataFlow(kind);
+        var dataFlow = ToDataFlow(target.Kind);
         IMMDeviceEnumerator? enumerator = null;
 
         try
         {
             enumerator = CreateDeviceEnumerator();
-            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Console, out var device));
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ToERole(target.Role), out var device));
 
             try
             {
@@ -258,19 +270,20 @@ internal static partial class AudioDeviceService
         }
     }
 
-    private static AudioDeviceInfo[] GetRegistryDevices(AudioDeviceKind kind, string? defaultDeviceId)
+    private static AudioDeviceInfo[] GetRegistryDevices(AudioDeviceTarget target, string? defaultDeviceId)
     {
         if (!OperatingSystem.IsWindows())
         {
             return [];
         }
 
+        var kind = target.Kind;
         var devices = new List<AudioDeviceInfo>();
         var subkeyName = kind == AudioDeviceKind.Output ? "Render" : "Capture";
         using var audioKey = Registry.LocalMachine.OpenSubKey($@"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\{subkeyName}");
         if (audioKey is null)
         {
-            return GetDefaultDeviceFallback(kind);
+            return GetDefaultDeviceFallback(target);
         }
 
         foreach (var endpointKeyName in audioKey.GetSubKeyNames())
@@ -368,14 +381,15 @@ internal static partial class AudioDeviceService
         return $"{prefix}.{endpointKeyName}";
     }
 
-    private static string? GetDefaultDeviceId(EDataFlow dataFlow)
+    private static string? GetDefaultDeviceId(AudioDeviceTarget target)
     {
+        var dataFlow = ToDataFlow(target.Kind);
         IMMDeviceEnumerator? enumerator = null;
 
         try
         {
             enumerator = CreateDeviceEnumerator();
-            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ERole.Console, out var device));
+            Marshal.ThrowExceptionForHR(enumerator.GetDefaultAudioEndpoint(dataFlow, ToERole(target.Role), out var device));
 
             try
             {
@@ -389,7 +403,7 @@ internal static partial class AudioDeviceService
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException or NotSupportedException)
         {
-            return GetDefaultDeviceIdFromMediaDevice(ToDeviceKind(dataFlow));
+            return GetDefaultDeviceIdFromMediaDevice(target);
         }
         finally
         {
@@ -400,13 +414,16 @@ internal static partial class AudioDeviceService
         }
     }
 
-    private static string? GetDefaultDeviceIdFromMediaDevice(AudioDeviceKind kind)
+    private static string? GetDefaultDeviceIdFromMediaDevice(AudioDeviceTarget target)
     {
         try
         {
-            var id = kind == AudioDeviceKind.Output
-                ? MediaDevice.GetDefaultAudioRenderId(AudioDeviceRole.Default)
-                : MediaDevice.GetDefaultAudioCaptureId(AudioDeviceRole.Default);
+            var role = target.Role == AudioEndpointRole.Communications
+                ? AudioDeviceRole.Communications
+                : AudioDeviceRole.Default;
+            var id = target.Kind == AudioDeviceKind.Output
+                ? MediaDevice.GetDefaultAudioRenderId(role)
+                : MediaDevice.GetDefaultAudioCaptureId(role);
 
             return string.IsNullOrWhiteSpace(id) ? null : NormalizeEndpointId(id);
         }
@@ -476,9 +493,9 @@ internal static partial class AudioDeviceService
         return kind == AudioDeviceKind.Output ? EDataFlow.Render : EDataFlow.Capture;
     }
 
-    private static AudioDeviceKind ToDeviceKind(EDataFlow dataFlow)
+    private static ERole ToERole(AudioEndpointRole role)
     {
-        return dataFlow == EDataFlow.Capture ? AudioDeviceKind.Input : AudioDeviceKind.Output;
+        return role == AudioEndpointRole.Communications ? ERole.Communications : ERole.Console;
     }
 
     private static bool IsSameEndpointId(string endpointId, string? otherEndpointId)
@@ -1017,24 +1034,36 @@ internal static partial class AudioDeviceService
 internal sealed record AudioStatusSnapshot(
     string? OutputDeviceId,
     string OutputDeviceName,
+    string? CommunicationsOutputDeviceId,
+    string CommunicationsOutputDeviceName,
     string? InputDeviceId,
     string InputDeviceName,
+    string? CommunicationsInputDeviceId,
+    string CommunicationsInputDeviceName,
     DateTimeOffset UpdatedAt)
 {
     public bool HasSameDevices(AudioStatusSnapshot other)
     {
         return string.Equals(OutputDeviceId, other.OutputDeviceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(CommunicationsOutputDeviceId, other.CommunicationsOutputDeviceId, StringComparison.OrdinalIgnoreCase)
             && string.Equals(InputDeviceId, other.InputDeviceId, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(CommunicationsInputDeviceId, other.CommunicationsInputDeviceId, StringComparison.OrdinalIgnoreCase)
             && string.Equals(OutputDeviceName, other.OutputDeviceName, StringComparison.Ordinal)
-            && string.Equals(InputDeviceName, other.InputDeviceName, StringComparison.Ordinal);
+            && string.Equals(CommunicationsOutputDeviceName, other.CommunicationsOutputDeviceName, StringComparison.Ordinal)
+            && string.Equals(InputDeviceName, other.InputDeviceName, StringComparison.Ordinal)
+            && string.Equals(CommunicationsInputDeviceName, other.CommunicationsInputDeviceName, StringComparison.Ordinal);
     }
 
     public bool IsReliable()
     {
         return !string.IsNullOrWhiteSpace(OutputDeviceId)
+            && !string.IsNullOrWhiteSpace(CommunicationsOutputDeviceId)
             && !string.IsNullOrWhiteSpace(InputDeviceId)
+            && !string.IsNullOrWhiteSpace(CommunicationsInputDeviceId)
             && OutputDeviceName != "Unavailable"
-            && InputDeviceName != "Unavailable";
+            && CommunicationsOutputDeviceName != "Unavailable"
+            && InputDeviceName != "Unavailable"
+            && CommunicationsInputDeviceName != "Unavailable";
     }
 }
 
@@ -1042,6 +1071,20 @@ internal enum AudioDeviceKind
 {
     Output,
     Input,
+}
+
+internal enum AudioEndpointRole
+{
+    Default,
+    Communications,
+}
+
+internal readonly record struct AudioDeviceTarget(AudioDeviceKind Kind, AudioEndpointRole Role)
+{
+    public static readonly AudioDeviceTarget Output = new(AudioDeviceKind.Output, AudioEndpointRole.Default);
+    public static readonly AudioDeviceTarget CommunicationsOutput = new(AudioDeviceKind.Output, AudioEndpointRole.Communications);
+    public static readonly AudioDeviceTarget Input = new(AudioDeviceKind.Input, AudioEndpointRole.Default);
+    public static readonly AudioDeviceTarget CommunicationsInput = new(AudioDeviceKind.Input, AudioEndpointRole.Communications);
 }
 
 internal enum AudioDeviceNameFormat

@@ -6,21 +6,21 @@ namespace AudioStatusExtension;
 
 internal sealed partial class AudioDevicesPage : ListPage
 {
-    private readonly AudioDeviceKind _kind;
+    private readonly AudioDeviceTarget _target;
     private readonly Action _onChanged;
 
-    public AudioDevicesPage(AudioDeviceKind kind, Action onChanged)
+    public AudioDevicesPage(AudioDeviceTarget target, Action onChanged)
     {
-        _kind = kind;
+        _target = target;
         _onChanged = onChanged;
-        Icon = new IconInfo(kind == AudioDeviceKind.Output ? "\uE767" : "\uE720");
-        Title = $"{GetKindLabel(kind)} devices";
-        Name = $"Switch {GetKindLabel(kind).ToLowerInvariant()} device";
+        Icon = new IconInfo(GetIconGlyph(target));
+        Title = $"{GetTargetLabel(target)} devices";
+        Name = $"Switch {GetTargetLabel(target).ToLowerInvariant()} device";
     }
 
     public override IListItem[] GetItems()
     {
-        var devices = AudioDeviceService.GetDevices(_kind);
+        var devices = AudioDeviceService.GetDevices(_target);
         if (devices.Length == 0)
         {
             return
@@ -28,7 +28,7 @@ internal sealed partial class AudioDevicesPage : ListPage
                 new ListItem(new NoOpCommand())
                 {
                     Title = "No active devices found",
-                    Subtitle = GetKindLabel(_kind),
+                    Subtitle = GetTargetLabel(_target),
                     Icon = Icon,
                 },
             ];
@@ -38,10 +38,10 @@ internal sealed partial class AudioDevicesPage : ListPage
         for (var index = 0; index < devices.Length; index++)
         {
             var device = devices[index];
-            items[index] = new ListItem(new SetDefaultAudioDeviceCommand(_kind, device, Refresh))
+            items[index] = new ListItem(new SetDefaultAudioDeviceCommand(_target, device, Refresh))
             {
                 Title = device.Name,
-                Subtitle = device.IsDefault ? $"{GetKindLabel(_kind)} - current" : GetKindLabel(_kind),
+                Subtitle = device.IsDefault ? $"{GetTargetLabel(_target)} - current" : GetTargetLabel(_target),
                 Icon = Icon,
             };
         }
@@ -54,9 +54,20 @@ internal sealed partial class AudioDevicesPage : ListPage
         RaiseItemsChanged();
     }
 
-    private static string GetKindLabel(AudioDeviceKind kind)
+    internal static string GetTargetLabel(AudioDeviceTarget target)
     {
-        return kind == AudioDeviceKind.Output ? "Output" : "Input";
+        return target switch
+        {
+            { Kind: AudioDeviceKind.Output, Role: AudioEndpointRole.Communications } => "Communications output",
+            { Kind: AudioDeviceKind.Input, Role: AudioEndpointRole.Communications } => "Communications input",
+            { Kind: AudioDeviceKind.Output } => "Output",
+            _ => "Input",
+        };
+    }
+
+    internal static string GetIconGlyph(AudioDeviceTarget target)
+    {
+        return target.Kind == AudioDeviceKind.Output ? "\uE767" : "\uE720";
     }
 
     private void Refresh()
@@ -67,24 +78,24 @@ internal sealed partial class AudioDevicesPage : ListPage
 
 internal sealed partial class SetDefaultAudioDeviceCommand : InvokableCommand
 {
-    private readonly AudioDeviceKind _kind;
+    private readonly AudioDeviceTarget _target;
     private readonly AudioDeviceInfo _device;
     private readonly Action _onChanged;
 
-    public SetDefaultAudioDeviceCommand(AudioDeviceKind kind, AudioDeviceInfo device, Action onChanged)
+    public SetDefaultAudioDeviceCommand(AudioDeviceTarget target, AudioDeviceInfo device, Action onChanged)
     {
-        _kind = kind;
+        _target = target;
         _device = device;
         _onChanged = onChanged;
         Name = device.Name;
-        Icon = new IconInfo(kind == AudioDeviceKind.Output ? "\uE767" : "\uE720");
+        Icon = new IconInfo(AudioDevicesPage.GetIconGlyph(target));
     }
 
     public override ICommandResult Invoke()
     {
         try
         {
-            AudioDeviceService.SetDefaultDevice(_kind, _device.Id);
+            AudioDeviceService.SetDefaultDevice(_target, _device.Id);
 
             try
             {

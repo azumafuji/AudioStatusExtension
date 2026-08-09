@@ -20,7 +20,9 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
     private readonly ICommandItem[] _commands;
     private readonly AudioStatusExtensionPage _page;
     private readonly AudioDevicesPage _outputDevicesPage;
+    private readonly AudioDevicesPage _communicationsOutputDevicesPage;
     private readonly AudioDevicesPage _inputDevicesPage;
+    private readonly AudioDevicesPage _communicationsInputDevicesPage;
     private readonly AudioStatusDockBand _dockBand;
     private readonly Timer _refreshDebounceTimer;
     private readonly Timer _listenerHealthTimer;
@@ -54,8 +56,10 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
         _extensionSettings.SettingsChanged += OnSettingsChanged;
         _scheduleRefreshCallback = CreateWeakScheduleRefreshCallback(this);
         _page = new AudioStatusExtensionPage(_scheduleRefreshCallback);
-        _outputDevicesPage = new AudioDevicesPage(AudioDeviceKind.Output, _scheduleRefreshCallback);
-        _inputDevicesPage = new AudioDevicesPage(AudioDeviceKind.Input, _scheduleRefreshCallback);
+        _outputDevicesPage = new AudioDevicesPage(AudioDeviceTarget.Output, _scheduleRefreshCallback);
+        _communicationsOutputDevicesPage = new AudioDevicesPage(AudioDeviceTarget.CommunicationsOutput, _scheduleRefreshCallback);
+        _inputDevicesPage = new AudioDevicesPage(AudioDeviceTarget.Input, _scheduleRefreshCallback);
+        _communicationsInputDevicesPage = new AudioDevicesPage(AudioDeviceTarget.CommunicationsInput, _scheduleRefreshCallback);
         _dockBand = new AudioStatusDockBand(_scheduleRefreshCallback);
         _commands = [
             new CommandItem(_page) { Title = DisplayName },
@@ -65,10 +69,22 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
                 Subtitle = "Choose the default speakers or headphones",
                 Icon = new IconInfo("\uE767"),
             },
+            new CommandItem(_communicationsOutputDevicesPage)
+            {
+                Title = "Switch communications output device",
+                Subtitle = "Choose the speakers or headphones used for calls",
+                Icon = new IconInfo("\uE767"),
+            },
             new CommandItem(_inputDevicesPage)
             {
                 Title = "Switch input device",
                 Subtitle = "Choose the default microphone",
+                Icon = new IconInfo("\uE720"),
+            },
+            new CommandItem(_communicationsInputDevicesPage)
+            {
+                Title = "Switch communications input device",
+                Subtitle = "Choose the microphone used for calls",
                 Icon = new IconInfo("\uE720"),
             },
         ];
@@ -174,7 +190,9 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
                 _dockBand.Refresh();
                 _page.Refresh();
                 _outputDevicesPage.RefreshItems();
+                _communicationsOutputDevicesPage.RefreshItems();
                 _inputDevicesPage.RefreshItems();
+                _communicationsInputDevicesPage.RefreshItems();
             }
             catch (Exception ex)
             {
@@ -215,7 +233,9 @@ public partial class AudioStatusExtensionCommandsProvider : CommandProvider
                     _dockBand.Refresh();
                     _page.Refresh();
                     _outputDevicesPage.RefreshItems();
+                    _communicationsOutputDevicesPage.RefreshItems();
                     _inputDevicesPage.RefreshItems();
+                    _communicationsInputDevicesPage.RefreshItems();
                 }
 
                 if (stateChanged || callbackStale || !_listenerRegistrationSucceeded)
